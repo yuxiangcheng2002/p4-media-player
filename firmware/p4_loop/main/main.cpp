@@ -20,6 +20,10 @@
 #include "esp_heap_caps.h"
 #include "esp_idf_version.h"
 #include "esp_log.h"
+#include "esp_private/esp_clk.h"
+#include "esp_rom_sys.h"
+#include "soc/lp_system_reg.h"
+#include "soc/soc.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -128,6 +132,62 @@ static void i2c_scan_display_bus()
     i2c_del_master_bus(bus);
 }
 
+// Boot breadcrumbs written by bootloader_components/boot_crumbs (LP store
+// registers 11/12): which boot this is since power-on, and where the previous
+// boot got to. Stage 1 = bootloader entered, 2 = bootloader init done,
+// 3 = application running.
+// After a cold plug the host often opens the USB console after the banner has
+// gone by (2026-11-23), so the reset reason and crumbs are printed again later
+// as BOOT_SUMMARY.
+static char s_crumbs_line[200] = "BOOT_CRUMBS none";
+
+static void boot_summary_task(void *)
+{
+    vTaskDelay(pdMS_TO_TICKS(8000));
+    printf("BOOT_SUMMARY reset reason rom code 0x%02x core0, 0x%02x core1 | %s\n",
+           (unsigned)esp_rom_get_reset_reason(0), (unsigned)esp_rom_get_reset_reason(1), s_crumbs_line);
+    vTaskDelete(nullptr);
+}
+
+static void print_boot_crumbs()
+{
+    const uint32_t cur = REG_READ(LP_SYSTEM_REG_LP_STORE11_REG);
+    const uint32_t prev = REG_READ(LP_SYSTEM_REG_LP_STORE12_REG);
+    if ((cur >> 16) != 0xB0C7) {
+        printf("BOOT_CRUMBS none (bootloader without crumbs)\n");
+        return;
+    }
+    // Step order must match the WRAP_* list in bootloader_components/boot_crumbs/crumbs.c.
+    static const char *const kStepNames[] = {
+        "bootloader_init_mem", "bootloader_clock_configure", "bootloader_console_init", "cache_hal_init",
+        "mmu_hal_init", "bootloader_flash_update_id", "bootloader_flash_xmc_startup",
+        "bootloader_read_bootloader_header", "bootloader_check_bootloader_validity",
+        "bootloader_init_spi_flash", "bootloader_config_wdt"};
+    const unsigned st = prev & 0xFF;
+    char where[128] = "";
+    // Sub-steps of bootloader_clock_configure (0x40-0x55, crumbs.c).
+    static const char *const kClkNames[] = {
+        "esp_rom_output_tx_wait_idle (first)", "rtc_clk_init", "esp_rom_delay_us", "rtc_clk_xtal_freq_update",
+        "rtc_clk_cpu_freq_get_config", "rtc_clk_cpu_freq_mhz_to_config", "rtc_clk_cpu_freq_set_config",
+        "rtc_clk_8m_enable", "rtc_clk_fast_src_set", "rtc_clk_slow_src_set",
+        "esp_rom_output_tx_wait_idle (in rtc_clk_init)"};
+    if (st >= 0xC0 && (st - 0xC0) / 2 < sizeof(kClkNames) / sizeof(kClkNames[0])) {
+        snprintf(where, sizeof(where), " (bootloader_clock_configure: in esp_rom_delay_us, %s %s)",
+                 (st & 1) ? "after returning from" : "called from", kClkNames[(st - 0xC0) / 2]);
+    } else if (st >= 0x40 && (st - 0x40) / 2 < sizeof(kClkNames) / sizeof(kClkNames[0])) {
+        snprintf(where, sizeof(where), " (bootloader_clock_configure: %s %s)", (st & 1) ? "returned from" : "inside",
+                 kClkNames[(st - 0x40) / 2]);
+    } else if (st >= 0x10 && (st - 0x10) / 2 < sizeof(kStepNames) / sizeof(kStepNames[0])) {
+        snprintf(where, sizeof(where), " (%s %s)", (st & 1) ? "returned from" : "inside",
+                 kStepNames[(st - 0x10) / 2]);
+    }
+    snprintf(s_crumbs_line, sizeof(s_crumbs_line),
+             "BOOT_CRUMBS boot #%u since power-on; previous boot reached stage 0x%02x%s%s",
+             (unsigned)((cur >> 8) & 0xFF), st, where, (prev >> 16) == 0xB0C7 ? "" : " (none recorded)");
+    printf("%s\n", s_crumbs_line);
+    REG_WRITE(LP_SYSTEM_REG_LP_STORE11_REG, (cur & ~0xFFu) | 3);
+}
+
 static void banner()
 {
     esp_chip_info_t ci;
@@ -140,12 +200,20 @@ static void banner()
            "IDF %s  chip rev v%d.%d  cores %d\n"
            "PSRAM %u KB free  internal %u KB free\n"
            "HDMI mode %dx%d@%d\n"
-           "reset reason %s\n",
+           "reset reason %s (rom code 0x%02x core0, 0x%02x core1), %llu ms since power-on\n",
            app->version, app->date, app->time, sha, esp_get_idf_version(),
            ci.revision / 100, ci.revision % 100, ci.cores,
            (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024),
            (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
-           P4LOOP_WIDTH, P4LOOP_HEIGHT, P4LOOP_REFRESH, reset_reason_name(esp_reset_reason()));
+           P4LOOP_WIDTH, P4LOOP_HEIGHT, P4LOOP_REFRESH, reset_reason_name(esp_reset_reason()),
+           // Raw cause (soc/reset_reasons.h): "WATCHDOG" covers several
+           // watchdogs: 0x07/0x0B MWDT, 0x09/0x0D/0x10 RTC WDT, 0x12 super WDT,
+           // 0x13 power glitch, 0x0F brown-out.
+           (unsigned)esp_rom_get_reset_reason(0), (unsigned)esp_rom_get_reset_reason(1),
+           // RTC time keeps counting through core and watchdog resets and starts
+           // at power-on: on a cold boot it shows how long the boot took in
+           // total, including any reset before this one.
+           (unsigned long long)(esp_clk_rtc_time() / 1000));
     print_help();
 }
 
@@ -156,6 +224,8 @@ extern "C" void app_main(void)
     // counting across USB/software resets (2026-11-22 it read 5003 s).
     led_init();
     banner();
+    print_boot_crumbs();
+    xTaskCreatePinnedToCore(boot_summary_task, "boot_summary", 3072, nullptr, 1, nullptr, 0);
     xTaskCreatePinnedToCore(console_task, "console", 4096, nullptr, 3, nullptr, 0);
     // Start the USB host first: enumerating a drive takes ~1 s and now runs
     // while the HDMI bridge and the SD slot initialise (boot time, 2026-11-23).
@@ -183,6 +253,7 @@ extern "C" void app_main(void)
     // no drive has mounted within 3 s. A drive that appears later takes over.
     static bool sd_ok = false, sd_tried = false;
     bool idle_shown = false;
+    int64_t no_source_since = 0;  // when "no drive, no card" began (0 = a source is present)
     for (;;) {
         if (!usb_stick_wait_mounted(3000)) {
             if (!sd_tried) {
@@ -207,20 +278,28 @@ extern "C" void app_main(void)
                     cur = (cur + 1) % sd_files.size();
                 }
                 idle_shown = false;
+                no_source_since = 0;
                 continue;
             }
-            if (!idle_shown) {
-                // Idle screen: the testsrc colour bars (dark blue if that fails).
-                led(false, false, true);
-                player_fill(0, 0, 40);
-                bench_show_pattern();
-                idle_shown = true;
+            if (!no_source_since) {
+                no_source_since = esp_timer_get_time();
+                led(false, false, true);  // the LED says "waiting" at once
                 update_note_media(false);
                 ESP_LOGW(TAG, "no drive - plug a FAT32 drive into the Unit's USB-C *Host* port");
+            }
+            // The screen stays black for the first 10 s: a card reader can take
+            // longer than 3 s to appear after power-up, and an idle screen
+            // flashing up meanwhile is distracting.
+            if (!idle_shown && esp_timer_get_time() - no_source_since >= 10 * 1000000LL) {
+                // Idle screen: the testsrc colour bars on black.
+                player_fill(0, 0, 0);
+                bench_show_pattern();
+                idle_shown = true;
             }
             continue;
         }
         idle_shown = false;
+        no_source_since = 0;
         printf("STICK_MOUNTED app_ms=%lld\n", esp_timer_get_time() / 1000);
 
         // Drive layout: /media, /config.txt, /update, /kit (tools/make_drive.py).
@@ -258,12 +337,21 @@ extern "C" void app_main(void)
         }
         for (size_t i = 0; i < files.size(); i++) printf("  [%u] %s\n", (unsigned)i, files[i].c_str());
 
-        size_t cur = 0;
+        size_t cur = 0, failed = 0;
         while (usb_stick_mounted()) {
             led(false, true, false);
             std::string path = std::string(USB_MOUNT_POINT "/") + files[cur];
-            if (!player_run(path.c_str())) {
+            if (player_run(path.c_str())) {
+                failed = 0;
+            } else {
                 led(true, false, false);
+                // Every file failed in a row: say so on screen (dark red)
+                // instead of leaving the last picture up.
+                if (++failed == files.size()) {
+                    ESP_LOGE(TAG, "none of the %u video(s) can be played - see the messages above",
+                             (unsigned)files.size());
+                    player_fill(60, 0, 0);
+                }
                 vTaskDelay(pdMS_TO_TICKS(1000));
             }
             cur = (cur + 1) % files.size();  // 'n' or an unplayable file moves on

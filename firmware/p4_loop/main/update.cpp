@@ -136,8 +136,8 @@ UpdateResult update_from_drive(const char *mount)
         return UpdateResult::Skipped;
     }
 
-    ESP_LOGW(TAG, "installing %s: version %s -> %s, %u B into %s", path.c_str(), cur.version, desc.version,
-             (unsigned)size, target->label);
+    ESP_LOGW(TAG, "installing %s: version %s -> %s, %u B into %s (attempt %u of %d)", path.c_str(), cur.version,
+             desc.version, (unsigned)size, target->label, (unsigned)tries + 1, kMaxTries);
     // Internal RAM: flash writes cannot source from PSRAM while the cache is
     // off. Allocated before esp_ota_begin, which erases the target slot.
     constexpr size_t kChunk = 16 * 1024;

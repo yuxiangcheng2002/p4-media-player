@@ -61,8 +61,19 @@ static void mount_task(void *arg)
                 continue;
             }
             ESP_LOGI(TAG, "stick connected, addr %u", ev.device.address);
-            if (msc_host_install_device(ev.device.address, &s_dev) != ESP_OK) {
-                ESP_LOGE(TAG, "install device failed");
+            // A reader caught mid-transfer by a chip reset can miss its first
+            // SCSI commands (seen 2026-11-23 after a USB reset: inquiry failed
+            // and the drive never mounted). Retry before giving up.
+            esp_err_t ierr = ESP_FAIL;
+            for (int attempt = 1; attempt <= 5; attempt++) {
+                ierr = msc_host_install_device(ev.device.address, &s_dev);
+                if (ierr == ESP_OK) break;
+                s_dev = nullptr;
+                ESP_LOGW(TAG, "install attempt %d failed (%s), retrying", attempt, esp_err_to_name(ierr));
+                vTaskDelay(pdMS_TO_TICKS(500));
+            }
+            if (ierr != ESP_OK) {
+                ESP_LOGE(TAG, "install device failed - unplug and replug the drive");
                 continue;
             }
             boot_mark("msc_installed");

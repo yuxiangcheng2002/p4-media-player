@@ -205,6 +205,12 @@ static void adopt_panel(const char *what)
     attach_vsync();
     ESP_LOGI(TAG, "%s %dx%d, fb format %d (%d B/px), fb %p %p %p", what, P4LOOP_WIDTH, P4LOOP_HEIGHT,
              P4LOOP_FB_FMT, P4LOOP_FB_BYTES, s_fb[0], s_fb[1], s_fb[2]);
+    // Start black. The driver callocs the buffers, but the zeros sit in the
+    // cache while scan-out DMA reads PSRAM directly, so after a software reset
+    // the previous boot's picture (e.g. the amber update screen) stayed on
+    // screen until something was drawn (seen 2026-11-23). player_fill writes
+    // back through the cache; zeros would also be green in YUV, not black.
+    player_fill(0, 0, 0);
 }
 
 // LT8912B through Espressif's esp_lcd_lt8912b driver, which takes our own DPI

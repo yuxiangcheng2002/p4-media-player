@@ -14,8 +14,11 @@ Measured on one Unit PoE-P4 (ESP32-P4 rev v1.3, the PoE-P4 rather than the
 PoE-P4X) with a USB-C SD card reader, see `tests/results/`:
 - 1080p 4:2:2 MJPEG at 30 fps from a USB drive, 0 late frames over a
   138 s pass including the loop point.
-- Reset to first frame about 1.06 s (measured with a USB reset; a cold
-  power-on adds the drive's own power-up).
+- Reset to first frame about 1.06 s (measured with a USB reset).
+- Cold power-on: before the bootloader fix (`dcdc_settle`, below) every
+  power-up also went through one watchdog reset, and plug to picture was
+  about 2.6-2.8 s (filmed once, including the monitor locking on). With the
+  fix the watchdog reset is gone; plug to picture has not been timed again.
 - Raw USB read rate 20-22 MB/s; frames are capped at 512 KB so the worst
   one-second burst stays below that.
 
@@ -75,10 +78,16 @@ can stay on the drive: an image equal to the running one is ignored.
 
 Verified on the bench (`tests/results/01-p4-mjpeg-throughput/2026-11-23-ota/`):
 install, a reset inside the confirm window rolling back, reinstall, confirm.
-Added after that run and not yet re-tested on the board: clearing the
-install count on confirm, the amber colour fix, rolling back when videos
-were found but none played, and refusing a new update while the running
-image is still unconfirmed (that slot holds the only known-good image).
+Later fixes (clearing the install count on confirm, the amber colour, rolling
+back when videos were found but none played, refusing a new update while the
+running image is still unconfirmed) were checked on the board in
+`tests/results/01-p4-mjpeg-throughput/2026-11-23-review-fixes-bench/`. Not
+yet triggered on the board: the dark red all-fail screen and the USB drive
+install retry.
+
+Drive updates replace the application only, never the bootloader. The
+`dcdc_settle` fix below lives in the bootloader, so a board flashed before it
+needs one USB flash (`idf.py -p <port> flash`) to get it.
 
 There is no signature check: anyone who can write the drive can install
 firmware. For an unattended show, set `update = off`.
@@ -105,11 +114,33 @@ Other builds:
 - `-DP4LOOP_YUV_ORDER=n`: YUV422 byte order index (0 YUYV, 1 UYVY, 2 VYUY,
   3 YVYU; default 1 = UYVY, which is what the JPEG engine writes).
 
+Bootloader components (`bootloader_components/`):
+- `dcdc_settle` (always built): waits 20 ms instead of IDF's 1 ms before the
+  internal LDO is turned off after the core supply moves to the DCDC. With
+  1 ms, every cold power-up of the one Unit PoE-P4 tested (13 of 13) hung
+  in the bootloader and was reset by the watchdog (up to about 1 s lost);
+  with 20 ms, 6 of 6 captured cold plugs booted cleanly. Written against
+  IDF 5.4.2. The build warns on other versions (the P4X build with
+  IDF >= 6.1 will warn; the fix is unverified there): IDF may have changed
+  the call it lengthens, and then the fix silently does nothing. To check a
+  build: cold-plug the board about 5 times, waiting 10 s each time; every
+  `BOOT_SUMMARY` line must show ROM code 0x01 (power-on), not 0x07 (main
+  watchdog). Only a USB flash installs a new bootloader.
+- `boot_crumbs` (diagnostic, off): records how far each boot got in two LP
+  registers that survive resets; the app prints it as `BOOT_CRUMBS`. Enable:
+  `rm -rf build/bootloader build/bootloader-prefix`, then
+  `P4LOOP_BOOT_CRUMBS=1 idf.py reconfigure build`. Without it the app
+  prints `BOOT_CRUMBS none`. Stage codes are listed at the top of
+  `bootloader_components/boot_crumbs/crumbs.c`.
+
 ## Serial output
 - Boot banner: chip revision, HDMI mode, reset reason (`BROWNOUT` = the
-  supply sagged, e.g. a weak monitor USB port).
+  supply sagged, e.g. a weak monitor USB port), with the raw ROM code. After
+  a cold plug the host often opens the console after the banner, so 8 s
+  after boot `BOOT_SUMMARY` repeats the reset reason (ROM code 0x01 = clean
+  power-on; 0x07 = main watchdog).
 - `DISPLAY_UP`, `STICK_MOUNTED`, `BOOT <step>`, `FIRST_FRAME` with
-  `app_ms=` (ms since app start; ~0.28 s of ROM + bootloader comes before).
+  `app_ms=` (ms since app start; ~0.3 s of ROM + bootloader comes before).
 - Once per second:
   `STAT fps= read_ms=avg/max dec_ms=avg/max wait_ms=avg/max late= copy= MBps= io_MBps= q_min= loop= frame=`
   - `late` = frames more than one period behind schedule.
@@ -122,8 +153,12 @@ Other builds:
   the converter, but the change does not reach the screen while playing; use
   `-DP4LOOP_YUV_ORDER`.
 
-## LED
-Red = booting / error, blue = waiting for a drive, green = playing.
+## LED and screen
+LED: red = booting / error, blue = waiting for a drive, green = playing.
+
+Screen: black from power-up; colour bars on black after 10 s without any
+drive or microSD video; dark red when every file failed to play; amber while
+a firmware update is written.
 
 ## Sources the hardware facts came from
 - LT8912B driver: Espressif `esp_lcd_lt8912b` (^0.2.1, from esp-bsp), which

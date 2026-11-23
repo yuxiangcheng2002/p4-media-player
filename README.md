@@ -17,8 +17,10 @@ Status (alpha), measured on one board with one USB-C card reader
 (`tests/results/01-p4-mjpeg-throughput/2026-11-23-boot-time-2/`):
 - 1080p30 playback, 0 late frames over a 138 s pass that includes the loop
   point.
-- About 1.06 s from a USB reset to the first frame (cold power-on adds the
-  drive's own start-up).
+- About 1.06 s from a USB reset to the first frame. A cold power-on used to
+  add one watchdog reset in the bootloader (plug to picture about 2.6-2.8 s,
+  filmed once); a bootloader fix removes it, and plug to picture has not been
+  timed again since.
 - The whole rig draws about 0.2 A at 5 V (peak about 0.3 A).
 - Firmware updates from the drive, with rollback, verified on the bench.
 
