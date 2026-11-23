@@ -1,0 +1,6 @@
+dependencies:
+  idf: ">=5.4.2"
+  # LT8912B (DSI -> HDMI) driver that accepts our own DPI config, so the frame
+  # buffers can be YUV422. Replaced M5GFX's driver, which hard-codes RGB888.
+  espressif/esp_lcd_lt8912b: "^0.2.1"
+  espressif/usb_host_msc: "^1.1.3"

@@ -1,0 +1,54 @@
+# Unit PoE-P4 (legacy, ESP32-P4 rev < 3.0) on ESP-IDF v5.4.2.
+# For Unit PoE-P4X (rev 3.x) layer sdkconfig.p4x.defaults on top and use ESP-IDF >= 6.1.
+CONFIG_IDF_TARGET="esp32p4"
+
+# 360 MHz CPU, the clock Espressif's JPEG benchmark used.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y
+
+# 32 MB octal PSRAM at 200 MHz (benchmark condition). 200 MHz is gated behind
+# experimental features in v5.4.x; if it proves unstable, drop to 100M and record it.
+CONFIG_SPIRAM=y
+CONFIG_IDF_EXPERIMENTAL_FEATURES=y
+CONFIG_SPIRAM_SPEED_200M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+# Skip the boot-time PSRAM memory test: it costs ~0.76 s of boot (measured
+# 2026-11-22: "I (282) Speed 200MHz" -> "I (1044) memory test OK"). Boot speed
+# is a requirement; the test only detects faulty PSRAM chips.
+# CONFIG_SPIRAM_MEMTEST is not set
+
+# Bigger L2 cache helps the CPU side; frame data is moved by DMA anyway.
+CONFIG_CACHE_L2_CACHE_256KB=y
+
+# Console and command input on the USB-Serial-JTAG port (the board's download USB-C).
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# FAT long file names so clip names like p4_1080p_yuv422.avi are visible.
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255
+# O(1) lseek on read-only files (cluster link map) instead of walking the FAT
+# chain from the start: the AVI indexer seeks once per frame header.
+CONFIG_FATFS_USE_FASTSEEK=y
+CONFIG_FATFS_FAST_SEEK_BUFFER_SIZE=64
+
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# Player loop runs in app_main; keep it on core 1, USB/reader tasks are pinned to core 0.
+CONFIG_ESP_MAIN_TASK_AFFINITY_CPU1=y
+
+# Boot time (2026-11-23):
+# - QIO flash: the bootloader reads and SHA-checks the whole app image on
+#   every boot; DIO took ~0.22 s for the 1.5 MB segment.
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+# - USB attach debounce 250 -> 100 ms, the USB 2.0 minimum (TATTDB).
+CONFIG_USB_HOST_DEBOUNCE_DELAY_MS=100
+# - Bootloader prints warnings only (its info lines are ~40 lines per boot).
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+
+# Updates from the drive (update.h): a new image boots "pending verify" and
+# the bootloader rolls back if it resets before the firmware confirms itself.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y

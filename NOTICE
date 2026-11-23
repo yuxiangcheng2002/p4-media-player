@@ -1,0 +1,35 @@
+p4-media-player
+Copyright (C) 2026 Yuxiang Cheng
+Licensed under the GNU General Public License v3.0 only (see LICENSE).
+
+Third-party material and sources
+--------------------------------
+
+M5GFX (https://github.com/m5stack/M5GFX), MIT License, Copyright (c) M5Stack.
+  The LT8912B setup values used in firmware/p4_loop/main/player.cpp (1080p30
+  and 720p60 video timings, 80 MHz pixel clock, MIPI-DSI 2 lanes at
+  1000 Mbps, LDO channel 3 at 2500 mV) were taken from M5GFX at commit
+  28d4794 (M5UnitPoEP4DisplayOut.h, Panel_LT8912B.inl). No M5GFX source code
+  is included; the LT8912B itself is driven by Espressif's esp_lcd_lt8912b.
+
+M5Unit-PoE-P4-UserDemo (https://github.com/m5stack/M5Unit-PoE-P4-UserDemo),
+  MIT License: LED pin assignment (GPIO 15/16/17) and the ESP-IDF version
+  requirement of the PoE-P4X variant.
+
+Pin facts cross-checked against M5Unified (MIT) and the M5Stack Unit PoE-P4
+variant in arduino-esp32 (pins_arduino.h), and against M5Stack's published
+schematics for the Unit PoE-P4 and the Display Out add-on. Only pin numbers
+and wiring facts were taken; no code from these sources is included.
+
+ESP-IDF and the Espressif components fetched at build time
+(espressif/esp_lcd_lt8912b, espressif/usb_host_msc, espressif/usb; see
+firmware/p4_loop/dependencies.lock) are Apache License 2.0. They are not
+included in this repository; a firmware binary built from it contains them,
+together with ESP-IDF's own third-party components (FreeRTOS, FatFs, mbedTLS,
+newlib and others, each under its own license; see ESP-IDF's COPYRIGHT).
+Whoever passes on a built p4_loop.bin (for example on a drive made with
+tools/make_drive.py --firmware) must also offer the corresponding source
+under GPL-3.0 section 6; a drive made with --kit or --kit-git carries it.
+
+The decode-bench JPEG frames in firmware/p4_loop/main/bench/ are generated
+from ffmpeg's built-in test sources by tools/make_bench_frames.sh.
