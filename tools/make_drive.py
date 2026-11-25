@@ -41,6 +41,10 @@ CONFIG_TEMPLATE = """\
 # file = clip.avi     loop only this file from /media (default: every .avi, in name order)
 # update = off        ignore /update/*.bin (default: on; a new image there is installed whenever
 #                     the drive is mounted, at power-up or when plugged in)
+# mode = 720          HDMI output: 1080p30 (default, 30 Hz), 1080 (35 Hz) or 720 (60 Hz).
+#                     Use 720 for monitors that show "Out of range" at 1080. Videos must be
+#                     encoded at the same resolution (tools/p4_transcode.py --height 720).
+#                     A change restarts the player once.
 """
 
 FAT32_MAX = 4 * 1024**3 - 1

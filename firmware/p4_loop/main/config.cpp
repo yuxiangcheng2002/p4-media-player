@@ -51,6 +51,8 @@ bool config_load(const char *path, PlayerConfig &out)
         std::string val = trim(eq + 1, strlen(eq + 1));
         if (key == "file") {
             out.file = val;
+        } else if (key == "mode") {
+            out.mode = val;
         } else if (key == "update") {
             const char *v = val.c_str();
             if (!strcasecmp(v, "on") || !strcasecmp(v, "yes") || !strcasecmp(v, "true") || !strcmp(v, "1")) {
@@ -67,6 +69,7 @@ bool config_load(const char *path, PlayerConfig &out)
         }
     }
     fclose(f);
-    ESP_LOGI(TAG, "file=%s update=%s", out.file.empty() ? "(all)" : out.file.c_str(), out.update ? "on" : "off");
+    ESP_LOGI(TAG, "file=%s update=%s mode=%s", out.file.empty() ? "(all)" : out.file.c_str(), out.update ? "on" : "off",
+             out.mode.empty() ? "(default)" : out.mode.c_str());
     return true;
 }

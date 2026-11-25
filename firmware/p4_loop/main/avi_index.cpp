@@ -1,3 +1,7 @@
+#include <memory>
+#include "ff.h"
+#include <cstdio>
+#include <cstring>
 #include "avi_index.h"
 
 #include <algorithm>
@@ -154,4 +158,30 @@ bool avi_build_index(ByteSource &src, AviInfo &out)
              (unsigned)out.width, (unsigned)out.height, (unsigned)out.frames.size(),
              (unsigned)out.us_per_frame, (unsigned)out.max_frame);
     return !out.frames.empty();
+}
+
+bool avi_peek_size(int drive, const char *rel_path, uint32_t &width, uint32_t &height)
+{
+    if (drive < 0) return false;
+    // FIL embeds a sector buffer (up to 4 KB): heap, not stack.
+    std::unique_ptr<FIL> fil(new FIL);
+    char path[300];
+    snprintf(path, sizeof(path), "%d:/%s", drive, rel_path);
+    if (f_open(fil.get(), path, FA_READ) != FR_OK) return false;
+    uint8_t b[512];
+    UINT n = 0;
+    FRESULT r = f_read(fil.get(), b, sizeof b, &n);
+    f_close(fil.get());
+    if (r != FR_OK) return false;
+    if (n < 12 || memcmp(b, "RIFF", 4) != 0 || memcmp(b + 8, "AVI ", 4) != 0) return false;
+    // avih chunk: "avih", u32 size, then MainAVIHeader; dwWidth/dwHeight are
+    // at +32/+36 of its data.
+    for (size_t i = 12; i + 8 + 40 <= n; i++) {
+        if (memcmp(b + i, "avih", 4) != 0) continue;
+        const uint8_t *d = b + i + 8;
+        width = d[32] | d[33] << 8 | d[34] << 16 | (uint32_t)d[35] << 24;
+        height = d[36] | d[37] << 8 | d[38] << 16 | (uint32_t)d[39] << 24;
+        return width && height;
+    }
+    return false;
 }

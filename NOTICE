@@ -6,10 +6,11 @@ Third-party material and sources
 --------------------------------
 
 M5GFX (https://github.com/m5stack/M5GFX), MIT License, Copyright (c) M5Stack.
-  The LT8912B setup values used in firmware/p4_loop/main/player.cpp (1080p30
-  and 720p60 video timings, 80 MHz pixel clock, MIPI-DSI 2 lanes at
-  1000 Mbps, LDO channel 3 at 2500 mV) were taken from M5GFX at commit
-  28d4794 (M5UnitPoEP4DisplayOut.h, Panel_LT8912B.inl). No M5GFX source code
+  The LT8912B setup values used in firmware/p4_loop/main/player.cpp and
+  video_mode.cpp (80 MHz pixel clock, MIPI-DSI 2 lanes at 1000 Mbps, LDO
+  channel 3 at 2500 mV, and the 2080x1096 raster of mode `1080`) were taken
+  from M5GFX at commit 28d4794 (M5UnitPoEP4DisplayOut.h,
+  Panel_LT8912B.inl). The `1080p30` and `720` rasters are this project's own. No M5GFX source code
   is included; the LT8912B itself is driven by Espressif's esp_lcd_lt8912b.
 
 M5Unit-PoE-P4-UserDemo (https://github.com/m5stack/M5Unit-PoE-P4-UserDemo),

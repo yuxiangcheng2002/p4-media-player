@@ -59,10 +59,30 @@ With several files and no `file =` setting, the player starts with the first
 in name order and moves on only on `n` or when a file cannot be played.
 
 `/config.txt` ("key = value", `#` comments):
-- `file = clip.avi`: loop only this file (exact name in /media). If it is
+- `file = clip.avi`: loop only this file (name in /media, case-insensitive). If it is
   not found, the player logs a warning and plays the other videos.
 - `update = off`: ignore `/update` (default on). Only `on/yes/true/1` turn
   updates on; anything else turns them off.
+- `mode = 1080 | 1080p30 | 720`: HDMI output (default `1080p30`). The pixel
+  clock is 80 MHz (the closest the P4 makes to CEA's 74.25 MHz), so the modes
+  are not exact CEA timings:
+
+  | mode | raster | rates | monitors tried (2026-11-25) |
+  |---|---|---|---|
+  | `1080` | 2080x1096 | 38.46 kHz, 35.09 Hz, VIC 0 | bench monitor yes; ASUS VS229H "Out of range" |
+  | `1080p30` | 2368x1125 | 33.78 kHz, 30.03 Hz, VIC 34 | bench monitor yes; ASUS "Out of range" |
+  | `720` | 1776x750 | 45.05 kHz, 60.06 Hz, VIC 4 | both |
+
+  Use `720` for a monitor that shows "Out of range" (most PC monitors want
+  50 Hz or more, which 1080p cannot reach at 80 MHz). Videos must be encoded
+  at the mode's resolution (`tools/p4_transcode.py --height 720`); files of
+  the other resolution are left out when the drive is listed, so one drive
+  can carry both versions; if none match, nothing plays and the console
+  logs an error. A boot on the `1080p30` default without a `mode` line has
+  not been observed on hardware yet (it was tested as an explicit build). The display starts before the drive is read, so the player keeps
+  the last mode in NVS: when the drive asks for a different one it stores it
+  and restarts once (about 1 s), then boots straight into it. While a freshly
+  installed firmware is still unconfirmed the change waits for a later boot.
 
 ## Firmware updates from the drive
 Put a `p4_loop.bin` (from `idf.py build`, `build/p4_loop.bin`) into
@@ -108,7 +128,6 @@ Unit PoE-P4X (rev 3.x) needs ESP-IDF >= 6.1 (untested):
 idf.py -B build.p4x -D SDKCONFIG=sdkconfig.p4x -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.p4x.defaults" build
 ```
 Other builds:
-- `-DP4LOOP_720P=1`: 1280x720@60 mode.
 - `-DP4LOOP_BENCH_FULL=1`: embed the full decode-bench frame set (`b` key).
 - `-DP4LOOP_FB_FMT=1`: RGB888 frame buffers (too slow at 1080p; comparison only).
 - `-DP4LOOP_YUV_ORDER=n`: YUV422 byte order index (0 YUYV, 1 UYVY, 2 VYUY,
@@ -160,13 +179,24 @@ Screen: black from power-up; colour bars on black after 10 s without any
 drive or microSD video; dark red when every file failed to play; amber while
 a firmware update is written.
 
+## DSI timing rules (why some modes used to break)
+Two bugs made every mode except M5's 1080p shear or stay dark (found with
+independent model reviews of the code, 2026-11-25):
+- The DSI lanes must stay in high-speed mode through blanking
+  (`dc.flags.disable_lp = true`), as every preset in `esp_lcd_lt8912b.h` does.
+- Every horizontal timing segment must be a multiple of 16 px: IDF 5.4.2
+  converts pixels to DSI byte clocks as px x 1.5625 (1000 Mbps / 80 MHz / 8)
+  and truncates, and the per-line shortfall shears the picture down the
+  frame. `video_mode.cpp` checks this with a static_assert.
+
 ## Sources the hardware facts came from
 - LT8912B driver: Espressif `esp_lcd_lt8912b` (^0.2.1, from esp-bsp), which
   takes our DPI config; its register tables match M5GFX's `Panel_LT8912B`.
   I2C (port 1, SDA GPIO0, SCL GPIO1, 0x48/0x49/0x4A), DSI 2 lanes at 1000 Mbps,
-  LDO channel 3 at 2500 mV and the 1080p30 / 720p60 timing (80 MHz pclk) are
-  taken from M5GFX `M5UnitPoEP4DisplayOut.h` / `Panel_LT8912B.inl` at commit
-  28d4794, which M5 tested on this board. Reset is GPIO4 (Unit schematic J6).
+  LDO channel 3 at 2500 mV, the 80 MHz pixel clock and the 2080x1096 raster
+  of mode `1080` are taken from M5GFX `M5UnitPoEP4DisplayOut.h` /
+  `Panel_LT8912B.inl` at commit 28d4794, which M5 tested on this board; the
+  `1080p30` and `720` rasters are this project's own (see DSI timing rules). Reset is GPIO4 (Unit schematic J6).
 - YUV422 -> RGB is the only DPI colour conversion in IDF 5.4.2
   (`esp_lcd_dpi_panel_set_color_conversion`); RGB565 -> RGB888 does not run.
 - LED pins R=GPIO17, G=GPIO15, B=GPIO16, common anode:

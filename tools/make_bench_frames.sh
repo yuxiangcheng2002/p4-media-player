@@ -32,7 +32,8 @@ import sys
 from PIL import Image
 src, out = sys.argv[1], sys.argv[2]
 # subsampling: 1 = 4:2:2 (luma 2x1), 0 = 4:4:4. quality 90 ~ ffmpeg -q:v 4 in size.
-# Names carry no resolution so the firmware's embed symbols are the same for both builds.
+# Names carry no resolution; the firmware embeds the 720p colour bars a second
+# time as flat720_422.jpg (copied below) so both resolutions fit in one image.
 for name in ("flat", "photo", "typical", "noisy"):
     Image.open(f"{src}/{name}.png").convert("RGB").save(f"{out}/{name}_422.jpg", quality=90, subsampling=1)
 Image.open(f"{src}/typical.png").convert("RGB").save(f"{out}/typical_444.jpg", quality=90, subsampling=0)
@@ -40,6 +41,9 @@ PY
 [ "$(ls "$J"/*.jpg | wc -l)" -eq 5 ]  # all five frames, or stop before touching $OUT
 rm -f "$OUT"/*.jpg
 mv "$J"/*.jpg "$OUT"/
+# One firmware serves both modes and EMBED_FILES names symbols after the file,
+# so the 720p colour bars also go in under their own name.
+if [ "$RES" = 720 ]; then cp "$OUT/flat_422.jpg" "$OUT/flat720_422.jpg"; fi
 rm -rf "$S" "$J"
 ls -l "$OUT"
 done

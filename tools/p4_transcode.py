@@ -20,7 +20,9 @@ one-second window of a 4K test clip 15.6 MB/s), ~280 KB for the add-on's
 microSD slot (~12 MB/s).
 
 The player shows each file at the frame rate recorded in the AVI; use sources
-at 30 fps or below (1080p is driven at ~35 Hz).
+at 30 fps or below (the default 1080p30 mode refreshes at 30.03 Hz, `mode =
+1080` at 35.09 Hz, `mode = 720` at 60.06 Hz; 60 fps sources are refused in
+every mode).
 
 Usage:
   tools/p4_transcode.py input.mp4 outdir --quality 90 --max-kb 512 [--height 720]
@@ -84,7 +86,7 @@ def main():
     rate = info["r_frame_rate"]  # keep the source rate exactly (e.g. 30000/1001)
     num, den = (int(x) for x in rate.split("/"))
     if den == 0 or num / den > 30.5:
-        sys.exit(f"source is {rate} fps; the player shows at most 30 fps at 1080p. "
+        sys.exit(f"source is {rate} fps; the player shows at most 30 fps. "
                  "Convert first, e.g. ffmpeg -i in.mp4 -r 30 -c:v libx264 -crf 12 in30.mp4")
     h = a.height
     w = 1920 if h == 1080 else 1280

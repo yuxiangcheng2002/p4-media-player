@@ -3,7 +3,8 @@
 *Superseded: early bench without HDMI (FPC cable missing at the time); YUV422 byte order and colours were later settled as UYVY. Current results: `2026-11-23-boot-time-2/`.*
 
 Same bench and conditions as `../2026-11-22-bench/summary.md`, built with
-`-DP4LOOP_720P=1`: 1280x720 frames (tools/make_bench_frames.sh, bench/720),
+`-DP4LOOP_720P=1` (a build option since replaced by `mode = 720` in
+`config.txt`): 1280x720 frames (tools/make_bench_frames.sh, bench/720),
 DSI-only scan-out with M5GFX's 720p timing (80 MHz pclk, 1650x750 total,
 measured 64.2-64.8 Hz refresh), RGB888, 3 frame buffers. Raw serial logs are kept privately and not published.
 

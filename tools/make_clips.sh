@@ -15,7 +15,7 @@
 # Outputs:
 #   p4_1080p_422.avi        MJPEG, true 4:2:2 (luma 2x1): what the P4 player expects
 #   p4_1080p_422_noisy.avi  same, worst-case frame size for the USB/SD and PSRAM budget
-#   p4_720p_422.avi         same at 1280x720 (needs a 720p60 firmware build)
+#   p4_720p_422.avi         same at 1280x720 (plays with mode = 720 in config.txt)
 #   p4_1080p_ffmpeg2x2.avi  ffmpeg's own "4:2:2" (luma 2x2): decodes to 1088 lines,
 #                           rejected by the default (YUV422) player, which needs
 #                           true 4:2:2; exercises the copy fallback in fmt 1 builds

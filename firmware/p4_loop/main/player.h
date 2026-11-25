@@ -4,13 +4,8 @@
 #include "driver/jpeg_types.h"
 #include <cstdint>
 
-// Panel mode. LT8912B on the Display Out add-on supports only these two
-// (M5GFX M5UnitPoEP4DisplayOut::isSupportedTiming; timings copied from M5GFX).
-#ifndef P4LOOP_WIDTH
-#define P4LOOP_WIDTH 1920
-#define P4LOOP_HEIGHT 1080
-#define P4LOOP_REFRESH 30
-#endif
+// Output mode (resolution and timing): chosen at run time, see video_mode.h.
+#include "video_mode.h"
 
 // Frame-buffer format (build with -DP4LOOP_FB_FMT=n):
 //   1 RGB888 in PSRAM, RGB888 on DSI (what M5GFX's driver used; ~24 fps at 1080p)
@@ -43,6 +38,7 @@ struct PlayerControl {
     std::atomic<bool> reset_stats{false};
     std::atomic<bool> dump_status{false};
     std::atomic<bool> bench{false};      // rerun the decode bench
+    std::atomic<bool> test_bars{false};  // show the colour bars while nothing plays (monitor test)
 };
 extern PlayerControl g_ctl;
 

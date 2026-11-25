@@ -54,3 +54,10 @@ struct AviInfo {
 // Returns true on success. Walks RIFF 'AVI ' and any OpenDML 'AVIX' segments
 // (ffmpeg writes those past 1 GB). Reads only chunk headers.
 bool avi_build_index(ByteSource &src, AviInfo &out);
+
+// Frame size from the AVI main header ('avih' near the file start), without
+// indexing the file: lets the player skip videos encoded for the other HDMI
+// mode when it lists the drive. Reads through FatFs directly (drive number +
+// path from the volume root): the VFS open() builds a fast-seek map by walking
+// the whole FAT chain, ~60 ms for a 1 GB file. False if unreadable.
+bool avi_peek_size(int drive, const char *rel_path, uint32_t &width, uint32_t &height);

@@ -15,9 +15,13 @@
 
 static const char *TAG = "bench";
 
-// Frames at the HDMI mode's resolution from tools/make_bench_frames.sh (EMBED_FILES).
+// Frames from tools/make_bench_frames.sh (EMBED_FILES). The colour-bar frame
+// ("flat") exists for both resolutions, since the mode is chosen at run time;
+// the full decode bench set is 1080p only.
 extern const uint8_t flat_start[] asm("_binary_flat_422_jpg_start");
 extern const uint8_t flat_end[] asm("_binary_flat_422_jpg_end");
+extern const uint8_t flat720_start[] asm("_binary_flat720_422_jpg_start");
+extern const uint8_t flat720_end[] asm("_binary_flat720_422_jpg_end");
 #if P4LOOP_BENCH_FULL
 extern const uint8_t photo_start[] asm("_binary_photo_422_jpg_start");
 extern const uint8_t photo_end[] asm("_binary_photo_422_jpg_end");
@@ -62,6 +66,10 @@ static const jpeg_decode_cfg_t kDecCfg = {
 
 static bool load_frames()
 {
+    if (video_width() == 1280) {  // before the first copy: the 720p colour bars
+        s_frames[0].start = flat720_start;
+        s_frames[0].end = flat720_end;
+    }
     for (auto &f : s_frames) {
         if (f.psram) continue;
         f.len = f.end - f.start;
@@ -154,14 +162,18 @@ bool bench_show_pattern()
 
 void bench_run(bool have_display)
 {
-    printf("BENCH start mode=%dx%d fb_fmt=%d fb_bytes_per_px=%d have_display=%d psram_free=%u\n", P4LOOP_WIDTH, P4LOOP_HEIGHT, P4LOOP_FB_FMT, P4LOOP_FB_BYTES, have_display,
+    if (video_width() != 1920) {
+        printf("BENCH skipped: the bench frames are 1080p; set mode=1080 to run it\n");
+        return;
+    }
+    printf("BENCH start mode=%dx%d fb_fmt=%d fb_bytes_per_px=%d have_display=%d psram_free=%u\n", video_width(), video_height(), P4LOOP_FB_FMT, P4LOOP_FB_BYTES, have_display,
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     if (!load_frames()) {
         ESP_LOGE(TAG, "no PSRAM for input frames");
         return;
     }
     // Scratch sized for 16-line MCU rounding, so any sampling decodes here.
-    const size_t out_size = (size_t)P4LOOP_WIDTH * ((P4LOOP_HEIGHT + 15) / 16 * 16) * P4LOOP_FB_BYTES;
+    const size_t out_size = (size_t)video_width() * ((video_height() + 15) / 16 * 16) * P4LOOP_FB_BYTES;
     jpeg_decode_memory_alloc_cfg_t mc = {.buffer_direction = JPEG_DEC_ALLOC_OUTPUT_BUFFER};
     size_t cap = 0;
     uint8_t *scratch = static_cast<uint8_t *>(jpeg_alloc_decoder_mem(out_size, &mc, &cap));

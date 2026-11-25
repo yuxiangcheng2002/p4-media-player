@@ -20,6 +20,7 @@
 #include "esp_heap_caps.h"
 #include "esp_idf_version.h"
 #include "esp_log.h"
+#include "esp_ota_ops.h"
 #include "esp_private/esp_clk.h"
 #include "esp_rom_sys.h"
 #include "soc/lp_system_reg.h"
@@ -31,6 +32,7 @@
 #include "player.h"
 #include "bench.h"
 #include "config.h"
+#include "avi_index.h"
 #include "update.h"
 #include "sd_card.h"
 #include "usb_stick.h"
@@ -59,8 +61,8 @@ static void led_init()
 
 static void print_help()
 {
-    printf("keys: s=status  f=toggle free-run (decode ceiling; fps capped by ~35 Hz refresh)  v=toggle per-frame CSV\n"
-           "      r=reset stats  p=pause/resume  n=next file  h=help\n"
+    printf("keys: s=status  f=toggle free-run (decode ceiling; fps capped by the refresh rate)  v=toggle per-frame CSV\n"
+           "      r=reset stats  p=pause/resume  n=next file  k=colour bars when no video plays  h=help\n"
            "      (c=cycle YUV order: does not reach the screen while playing; b=decode bench: only without a display)\n"
            "CSV: F,frame,bytes,read_us,dec_us,fbwait_us,present_interval_us\n");
 }
@@ -85,6 +87,7 @@ static void console_task(void *)
         case 'n': g_ctl.next_file = true; break;
         case 'c': player_cycle_color_order(); break;
         case 'b': g_ctl.bench = true; printf("bench queued\n"); break;
+        case 'k': g_ctl.test_bars = true; printf("colour bars queued (shown once no video is playing)\n"); break;
         case 'h': case '?': print_help(); break;
         default: break;
         }
@@ -199,13 +202,14 @@ static void banner()
            "app %s  built %s %s  elf %s\n"
            "IDF %s  chip rev v%d.%d  cores %d\n"
            "PSRAM %u KB free  internal %u KB free\n"
-           "HDMI mode %dx%d@%d\n"
+           "HDMI mode %s: %dx%d@%.2f Hz (set by mode= in the drive's config.txt)\n"
            "reset reason %s (rom code 0x%02x core0, 0x%02x core1), %llu ms since power-on\n",
            app->version, app->date, app->time, sha, esp_get_idf_version(),
            ci.revision / 100, ci.revision % 100, ci.cores,
            (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024),
            (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
-           P4LOOP_WIDTH, P4LOOP_HEIGHT, P4LOOP_REFRESH, reset_reason_name(esp_reset_reason()),
+           video_timing().name, video_width(), video_height(), video_refresh_hz(),
+           reset_reason_name(esp_reset_reason()),
            // Raw cause (soc/reset_reasons.h): "WATCHDOG" covers several
            // watchdogs: 0x07/0x0B MWDT, 0x09/0x0D/0x10 RTC WDT, 0x12 super WDT,
            // 0x13 power glitch, 0x0F brown-out.
@@ -217,12 +221,64 @@ static void banner()
     print_help();
 }
 
+// Keep only videos encoded for the running HDMI mode, so a drive holding
+// both 1080p and 720p versions plays the right ones without a failed attempt
+// (1 s pause and red LED) per file each round. A file whose header cannot be
+// read stays in the list; the player reports it.
+static std::vector<std::string> match_mode(int drive, const std::vector<std::string> &files)
+{
+    std::vector<std::string> keep;
+    for (const auto &f : files) {
+        uint32_t w = 0, h = 0;
+        if (avi_peek_size(drive, f.c_str(), w, h) && ((int)w != video_width() || (int)h != video_height())) {
+            ESP_LOGI(TAG, "skipping %s: %ux%u, HDMI mode %s is %dx%d", f.c_str(), (unsigned)w, (unsigned)h,
+                     video_timing().name, video_width(), video_height());
+            continue;
+        }
+        keep.push_back(f);
+    }
+    if (keep.empty() && !files.empty()) {
+        ESP_LOGE(TAG, "no video matches HDMI mode %s (%dx%d): encode for it, or set mode= in config.txt",
+                 video_timing().name, video_width(), video_height());
+    }
+    return keep;
+}
+
+// The drive decides the HDMI mode: `mode=` in its config.txt, default
+// 1080p30 when the key (or the file) is missing. A different mode than the running
+// one is stored in NVS and applied by one restart. Not while a freshly
+// installed firmware is still on probation: a restart before it confirms
+// itself would roll it back, so the change waits for the next boot.
+static void apply_mode_from_drive(const PlayerConfig &cfg)
+{
+    VideoMode want = kDefaultMode;
+    if (!cfg.mode.empty() && !video_mode_parse(cfg.mode.c_str(), want)) {
+        ESP_LOGW(TAG, "config mode=%s not understood (1080, 1080p30 or 720): keeping %s", cfg.mode.c_str(),
+                 video_timing().name);
+        return;
+    }
+    if (want == video_mode()) return;
+    esp_ota_img_states_t st;
+    if (esp_ota_get_state_partition(esp_ota_get_running_partition(), &st) == ESP_OK &&
+        st == ESP_OTA_IMG_PENDING_VERIFY) {
+        ESP_LOGW(TAG, "mode %s requested, but this firmware is not confirmed yet: applying it on a later boot",
+                 mode_timing(want).name);
+        return;
+    }
+    if (video_mode_request(want)) {
+        printf("MODE_CHANGE %s -> %s, restarting\n", video_timing().name, mode_timing(want).name);
+        vTaskDelay(pdMS_TO_TICKS(100));  // let the log drain
+        esp_restart();
+    }
+}
+
 extern "C" void app_main(void)
 {
     // Boot time is read from the bootloader log ("I (n) cpu_start: Pro cpu start
     // user code", ms since reset). The RTC timer is not a substitute: it keeps
     // counting across USB/software resets (2026-11-22 it read 5003 s).
     led_init();
+    video_mode_load();  // the display starts before the drive is read: last mode from NVS
     banner();
     print_boot_crumbs();
     xTaskCreatePinnedToCore(boot_summary_task, "boot_summary", 3072, nullptr, 1, nullptr, 0);
@@ -260,7 +316,7 @@ extern "C" void app_main(void)
                 sd_tried = true;
                 sd_ok = sd_card_mount();
             }
-            auto sd_files = sd_ok ? sd_card_list_avi() : std::vector<std::string>{};
+            auto sd_files = sd_ok ? match_mode(sd_card_drive(), sd_card_list_avi()) : std::vector<std::string>{};
             if (!sd_files.empty()) {
                 printf("SD_MOUNTED app_ms=%lld files=%u\n", esp_timer_get_time() / 1000, (unsigned)sd_files.size());
                 update_note_media(true);
@@ -306,6 +362,7 @@ extern "C" void app_main(void)
         usb_stick_hold();  // released below, before playback takes its own hold
         PlayerConfig cfg;
         config_load(USB_MOUNT_POINT "/config.txt", cfg);
+        apply_mode_from_drive(cfg);
         if (cfg.update && update_from_drive(USB_MOUNT_POINT) == UpdateResult::Applied) {
             vTaskDelay(pdMS_TO_TICKS(100));  // let the log drain
             esp_restart();
@@ -325,6 +382,7 @@ extern "C" void app_main(void)
             if (pick.empty()) ESP_LOGW(TAG, "config file=%s not found in /media - playing all", cfg.file.c_str());
             else files = pick;
         }
+        files = match_mode(usb_stick_drive(), files);
         boot_mark("listed");
         usb_stick_release();
         update_note_media(!files.empty());
@@ -353,6 +411,12 @@ extern "C" void app_main(void)
                     player_fill(60, 0, 0);
                 }
                 vTaskDelay(pdMS_TO_TICKS(1000));
+                // Monitor test: the dark red above is hard to tell from "no
+                // signal" on some monitors (2026-11-25); 'k' puts up the bars.
+                if (g_ctl.test_bars.exchange(false)) {
+                    player_fill(0, 0, 0);
+                    bench_show_pattern();
+                }
             }
             cur = (cur + 1) % files.size();  // 'n' or an unplayable file moves on
         }

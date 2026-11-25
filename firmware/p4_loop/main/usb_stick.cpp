@@ -8,6 +8,7 @@
 
 #include "diskio_impl.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/queue.h"
@@ -27,6 +28,9 @@ static msc_host_device_handle_t s_dev;
 static msc_host_vfs_handle_t s_vfs;
 static volatile int s_pdrv = -1;
 static std::atomic<int> s_holds{0};
+// Set when a drive enumerated but the MSC driver could not take it; the
+// watchdog below then power-cycles the port instead of waiting for a re-plug.
+static std::atomic<bool> s_install_failed{false};
 
 int usb_stick_drive() { return s_pdrv; }
 void usb_stick_hold() { s_holds++; }
@@ -73,7 +77,8 @@ static void mount_task(void *arg)
                 vTaskDelay(pdMS_TO_TICKS(500));
             }
             if (ierr != ESP_OK) {
-                ESP_LOGE(TAG, "install device failed - unplug and replug the drive");
+                ESP_LOGE(TAG, "install device failed - the port will be power-cycled");
+                s_install_failed = true;
                 continue;
             }
             boot_mark("msc_installed");
@@ -118,6 +123,51 @@ static void mount_task(void *arg)
     }
 }
 
+// Drive watchdog. Seen 2026-11-25 with the drive sitting in the port the whole
+// time: enumeration failed (ENUM ... CHECK_SHORT_DEV_DESC FAILED) and IDF 5.4.2
+// does not retry until the device disconnects, so the player stayed without
+// its drive until someone re-plugged it. The same can follow a "stick removed"
+// glitch. Root-port power off/on makes the host see the drive as newly
+// attached and enumerate it again. It runs only while no drive is mounted and
+// no USB device is enumerated (or one enumerated but was refused): first after
+// 15 s, then backing off to once a minute, so a player that runs from microSD
+// with the port empty only toggles an idle port. The board's VBUS stays on (no
+// switch on the Unit is known), so a drive that has locked up itself is not
+// power-cycled by this.
+static void watch_task(void *arg)
+{
+    const int64_t first_us = 15 * 1000000LL, max_us = 60 * 1000000LL;
+    int64_t lost_since = esp_timer_get_time(), backoff = first_us;
+    int cycles = 0;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        const int64_t now = esp_timer_get_time();
+        if (usb_stick_mounted()) {
+            lost_since = now;
+            backoff = first_us;
+            continue;
+        }
+        uint8_t addrs[4];
+        int n = 0;
+        usb_host_device_addr_list_fill(sizeof addrs, addrs, &n);
+        if (n > 0 && !s_install_failed) {
+            lost_since = now;  // enumerated, MSC still installing (a card reader can take seconds)
+            continue;
+        }
+        if (now - lost_since < backoff) continue;
+        cycles++;
+        printf("USB_RECOVER cycle=%d no drive for %lld s (devices=%d install_failed=%d): root port off/on\n", cycles,
+               (now - lost_since) / 1000000, n, (int)s_install_failed.load());
+        usb_host_lib_set_root_port_power(false);
+        vTaskDelay(pdMS_TO_TICKS(500));
+        esp_err_t e = usb_host_lib_set_root_port_power(true);
+        if (e != ESP_OK) ESP_LOGE(TAG, "root port power on: %s", esp_err_to_name(e));
+        s_install_failed = false;
+        lost_since = esp_timer_get_time();
+        backoff = backoff * 2 > max_us ? max_us : backoff * 2;
+    }
+}
+
 void usb_stick_start()
 {
     s_evt_q = xQueueCreate(4, sizeof(msc_host_event_t));
@@ -137,6 +187,7 @@ void usb_stick_start()
     msc_cfg.callback = msc_cb;
     ESP_ERROR_CHECK(msc_host_install(&msc_cfg));
     xTaskCreatePinnedToCore(mount_task, "usb_mount", 4096, nullptr, 8, nullptr, 0);
+    xTaskCreatePinnedToCore(watch_task, "usb_watch", 3072, nullptr, 3, nullptr, 0);
 }
 
 bool usb_stick_wait_mounted(int timeout_ms)

@@ -38,6 +38,8 @@
 #include "esp_lcd_io_i2c.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_lt8912b.h"
+#include "hdmi_monitor.h"
+#include "video_mode.h"
 #include "esp_lcd_mipi_dsi.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_log.h"
@@ -94,7 +96,12 @@ static void attach_vsync()
 // ---- DSI plumbing shared by the HDMI path and the DSI-only bench path.
 // Lane setup, PHY LDO and timing follow M5GFX's Panel_LT8912B, which M5 tested
 // on this board: 2 lanes at 1000 Mbps, LDO ch 3 at 2500 mV, 80 MHz pixel clock
-// (1080p: 2080x1096 total, ~35 Hz; 720p: 1650x750, ~64.6 Hz).
+// (1080p: 2080x1096 total, ~35 Hz).
+//
+// The DPI pixel clock is an integer divider of 240, 160 or 40 MHz
+// (mipi_dsi_hal_host_dpi_calculate_divider), so the CEA 74.25 MHz cannot be
+// made and 80 MHz (240/3) is what runs. The timing of each output mode is in
+// video_mode.cpp (chosen at run time from the drive's config.txt).
 static esp_ldo_channel_handle_t s_ldo;
 static esp_lcd_dsi_bus_handle_t s_dsi_bus;
 // Index into kYuvOrders. The JPEG engine writes UYVY: with YUYV (0) the
@@ -137,7 +144,7 @@ static void fill_dpi_config(esp_lcd_dpi_panel_config_t &dc)
     dc = {};
     dc.virtual_channel = 0;
     dc.dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT;
-    dc.dpi_clock_freq_mhz = 80;
+    dc.dpi_clock_freq_mhz = kPixelClockMHz;
     dc.pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB888;  // what the LT8912B receives
 #if P4LOOP_FB_FMT == 2
     dc.in_color_format = LCD_COLOR_FMT_RGB565;          // what sits in PSRAM
@@ -149,16 +156,22 @@ static void fill_dpi_config(esp_lcd_dpi_panel_config_t &dc)
     dc.out_color_format = LCD_COLOR_FMT_RGB888;
 #endif
     dc.num_fbs = kNumFb;
-    dc.video_timing.h_size = P4LOOP_WIDTH;
-    dc.video_timing.v_size = P4LOOP_HEIGHT;
-#if P4LOOP_WIDTH == 1920
-    dc.video_timing.hsync_pulse_width = 32; dc.video_timing.hsync_back_porch = 80; dc.video_timing.hsync_front_porch = 48;
-    dc.video_timing.vsync_pulse_width = 5;  dc.video_timing.vsync_back_porch = 8;  dc.video_timing.vsync_front_porch = 3;
-#else
-    dc.video_timing.hsync_pulse_width = 40; dc.video_timing.hsync_back_porch = 220; dc.video_timing.hsync_front_porch = 110;
-    dc.video_timing.vsync_pulse_width = 5;  dc.video_timing.vsync_back_porch = 20;  dc.video_timing.vsync_front_porch = 5;
-#endif
+    const ModeTiming &kTiming = video_timing();
+    dc.video_timing.h_size = kTiming.hact;
+    dc.video_timing.v_size = kTiming.vact;
+    dc.video_timing.hsync_pulse_width = kTiming.hs; dc.video_timing.hsync_back_porch = kTiming.hbp;
+    dc.video_timing.hsync_front_porch = kTiming.hfp;
+    dc.video_timing.vsync_pulse_width = kTiming.vs; dc.video_timing.vsync_back_porch = kTiming.vbp;
+    dc.video_timing.vsync_front_porch = kTiming.vfp;
     dc.flags.use_dma2d = true;
+    // Keep the DSI lanes in high-speed mode through blanking. Every timing
+    // preset in esp_lcd_lt8912b.h sets this; without it the host may drop to
+    // LP-11 in long horizontal blanking. M5's 1080p (160 px = 2 us blanking)
+    // was clean, but padded 720p (498 px = 6.2 us) came out sheared on the
+    // ASUS (2026-11-25). Test: P4LOOP_ALLOW_LP=1 restores LP.
+#ifndef P4LOOP_ALLOW_LP
+    dc.flags.disable_lp = true;
+#endif
 }
 
 #if P4LOOP_FB_FMT == 4
@@ -201,9 +214,9 @@ static void adopt_panel(const char *what)
     void *fb[kNumFb] = {};
     ESP_ERROR_CHECK(esp_lcd_dpi_panel_get_frame_buffer(s_panel, kNumFb, &fb[0], &fb[1], &fb[2]));
     for (int i = 0; i < kNumFb; i++) s_fb[i] = static_cast<uint8_t *>(fb[i]);
-    s_fb_size = (size_t)P4LOOP_WIDTH * P4LOOP_HEIGHT * P4LOOP_FB_BYTES;
+    s_fb_size = (size_t)video_width() * video_height() * P4LOOP_FB_BYTES;
     attach_vsync();
-    ESP_LOGI(TAG, "%s %dx%d, fb format %d (%d B/px), fb %p %p %p", what, P4LOOP_WIDTH, P4LOOP_HEIGHT,
+    ESP_LOGI(TAG, "%s %dx%d, fb format %d (%d B/px), fb %p %p %p", what, video_width(), video_height(),
              P4LOOP_FB_FMT, P4LOOP_FB_BYTES, s_fb[0], s_fb[1], s_fb[2]);
     // Start black. The driver callocs the buffers, but the zeros sit in the
     // cache while scan-out DMA reads PSRAM directly, so after a software reset
@@ -266,11 +279,12 @@ bool player_display_init()
     esp_lcd_dpi_panel_config_t dc;
     fill_dpi_config(dc);
     lt8912b_vendor_config_t vc = {};
-#if P4LOOP_WIDTH == 1920
-    vc.video_timing = {48, 32, 80, 1920, 2080, 3, 5, 8, 1080, 1096, true, false, 0, LT8912B_ASPECT_RATION_16_9, 80};
-#else
-    vc.video_timing = {110, 40, 220, 1280, 1650, 5, 5, 20, 720, 750, true, true, 4, LT8912B_ASPECT_RATION_16_9, 80};
-#endif
+    const ModeTiming &kTiming = video_timing();
+    const uint16_t kHTotal = kTiming.hfp + kTiming.hs + kTiming.hbp + kTiming.hact;
+    const uint16_t kVTotal = kTiming.vfp + kTiming.vs + kTiming.vbp + kTiming.vact;
+    vc.video_timing = {kTiming.hfp, kTiming.hs,  kTiming.hbp, kTiming.hact, kHTotal,  kTiming.vfp,
+                       kTiming.vs,  kTiming.vbp, kTiming.vact, kVTotal,     kTiming.hpol, kTiming.vpol,
+                       kTiming.vic, LT8912B_ASPECT_RATION_16_9, kPixelClockMHz};
     vc.mipi_config.dsi_bus = s_dsi_bus;
     vc.mipi_config.dpi_config = &dc;
     vc.mipi_config.lane_num = 2;
@@ -295,6 +309,10 @@ bool player_display_init()
         return false;
     }
     adopt_panel("HDMI");
+    // Watch hot-plug, the bridge's readbacks and (if reachable) the EDID.
+    hdmi_monitor_start(i2c, ios[0], ios[1], vc.video_timing.hact, vc.video_timing.vact,
+                       vc.video_timing.htotal, vc.video_timing.vtotal, (int)dc.dpi_clock_freq_mhz,
+                       vc.video_timing.vic);
     return true;
 }
 
@@ -339,7 +357,7 @@ int player_next_fb(uint32_t *wait_us)
 
 void player_present(int k)
 {
-    esp_lcd_panel_draw_bitmap(s_panel, 0, 0, P4LOOP_WIDTH, P4LOOP_HEIGHT, s_fb[k]);
+    esp_lcd_panel_draw_bitmap(s_panel, 0, 0, video_width(), video_height(), s_fb[k]);
     s_retired_at[s_cur] = s_vsync;
     s_cur = k;
 }
@@ -375,7 +393,7 @@ void player_fill(uint8_t r, uint8_t g, uint8_t b)
         // overwrite what the JPEG DMA decodes into that buffer.
         esp_cache_msync(p, s_fb_size, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
     }
-    esp_lcd_panel_draw_bitmap(s_panel, 0, 0, P4LOOP_WIDTH, P4LOOP_HEIGHT, s_fb[0]);
+    esp_lcd_panel_draw_bitmap(s_panel, 0, 0, video_width(), video_height(), s_fb[0]);
     s_cur = 0;
     for (int i = 0; i < kNumFb; i++) s_retired_at[i] = s_vsync;
 }
@@ -664,9 +682,9 @@ static bool player_run_impl(const char *path)
         if (fd >= 0) close(fd);
         return false;
     }
-    if (pic.width != P4LOOP_WIDTH || pic.height != P4LOOP_HEIGHT) {
+    if (pic.width != video_width() || pic.height != video_height()) {
         ESP_LOGE(TAG, "video is %ux%u but HDMI mode is %dx%d - re-encode with tools/p4_transcode.py",
-                 (unsigned)pic.width, (unsigned)pic.height, P4LOOP_WIDTH, P4LOOP_HEIGHT);
+                 (unsigned)pic.width, (unsigned)pic.height, video_width(), video_height());
         if (fd >= 0) close(fd);
         return false;
     }
@@ -800,7 +818,7 @@ static bool player_run_impl(const char *path)
 
         // Present. Zero-copy: pointer switch at the next vsync. Copy path: the driver
         // copies into the *current* frame buffer, so it can tear; it is a fallback.
-        esp_lcd_panel_draw_bitmap(s_panel, 0, 0, P4LOOP_WIDTH, P4LOOP_HEIGHT, dst);
+        esp_lcd_panel_draw_bitmap(s_panel, 0, 0, video_width(), video_height(), dst);
         int64_t t_present = esp_timer_get_time();
         if (zero_copy) {
             // The buffer we just left stays on screen until the next vsync.
